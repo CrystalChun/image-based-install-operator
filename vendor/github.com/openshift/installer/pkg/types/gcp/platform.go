@@ -2,8 +2,17 @@ package gcp
 
 import (
 	"fmt"
+)
 
-	"github.com/openshift/installer/pkg/types/dns"
+// UserProvisionedDNS indicates whether the DNS solution is provisioned by the Installer or the user.
+type UserProvisionedDNS string
+
+const (
+	// UserProvisionedDNSEnabled indicates that the DNS solution is provisioned and provided by the user.
+	UserProvisionedDNSEnabled UserProvisionedDNS = "Enabled"
+
+	// UserProvisionedDNSDisabled indicates that the DNS solution is provisioned by the Installer.
+	UserProvisionedDNSDisabled UserProvisionedDNS = "Disabled"
 )
 
 // Platform stores all the global configuration that all machinesets
@@ -43,13 +52,17 @@ type Platform struct {
 
 	// userLabels has additional keys and values that the installer will add as
 	// labels to all resources that it creates on GCP. Resources created by the
-	// cluster itself may not include these labels.
+	// cluster itself may not include these labels. This is a TechPreview feature
+	// and requires setting CustomNoUpgrade featureSet with GCPLabelsTags featureGate
+	// enabled or TechPreviewNoUpgrade featureSet to configure labels.
 	UserLabels []UserLabel `json:"userLabels,omitempty"`
 
 	// userTags has additional keys and values that the installer will add as
 	// tags to all resources that it creates on GCP. Resources created by the
 	// cluster itself may not include these tags. Tag key and tag value should
-	// be the shortnames of the tag key and tag value resource.
+	// be the shortnames of the tag key and tag value resource. This is a TechPreview
+	// feature and requires setting CustomNoUpgrade featureSet with GCPLabelsTags
+	// featureGate enabled or TechPreviewNoUpgrade featureSet to configure tags.
 	UserTags []UserTag `json:"userTags,omitempty"`
 
 	// UserProvisionedDNS indicates if the customer is providing their own DNS solution in place of the default
@@ -57,7 +70,7 @@ type Platform struct {
 	// +kubebuilder:default:="Disabled"
 	// +default="Disabled"
 	// +kubebuilder:validation:Enum="Enabled";"Disabled"
-	UserProvisionedDNS dns.UserProvisionedDNS `json:"userProvisionedDNS,omitempty"`
+	UserProvisionedDNS UserProvisionedDNS `json:"userProvisionedDNS,omitempty"`
 }
 
 // UserLabel is a label to apply to GCP resources created for the cluster.

@@ -30,11 +30,7 @@ func IsKnownRegion(region string) bool {
 }
 
 func knownZones(region string) []string {
-	zones := make([]string, 0, len(powervs.Regions[region].Zones))
-	for z := range powervs.Regions[region].Zones {
-		zones = append(zones, z)
-	}
-	return zones
+	return powervs.Regions[region].Zones
 }
 
 // IsKnownZone return true is a specified zone is Known to the installer.

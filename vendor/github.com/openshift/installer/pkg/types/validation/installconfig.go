@@ -116,7 +116,6 @@ func ValidateInstallConfig(c *types.InstallConfig, usingAgentMethod bool) field.
 		allErrs = append(allErrs, validateNetworkingForPlatform(c.Networking, &c.Platform, field.NewPath("networking"))...)
 		allErrs = append(allErrs, validateNetworkingClusterNetworkMTU(c, field.NewPath("networking", "clusterNetworkMTU"))...)
 		allErrs = append(allErrs, validateVIPsForPlatform(c.Networking, &c.Platform, field.NewPath("platform"))...)
-		allErrs = append(allErrs, validateOVNKubernetesConfig(c.Networking, field.NewPath("networking"))...)
 	} else {
 		allErrs = append(allErrs, field.Required(field.NewPath("networking"), "networking is required"))
 	}
@@ -126,17 +125,11 @@ func ValidateInstallConfig(c *types.InstallConfig, usingAgentMethod bool) field.
 	} else {
 		allErrs = append(allErrs, field.Required(field.NewPath("controlPlane"), "controlPlane is required"))
 	}
-
 	multiArchEnabled := types.MultiArchFeatureGateEnabled(c.Platform.Name(), c.EnabledFeatureGates())
 	allErrs = append(allErrs, validateCompute(&c.Platform, c.ControlPlane, c.Compute, field.NewPath("compute"), multiArchEnabled)...)
-
-	releaseArch, err := version.ReleaseArchitecture()
-	if err != nil {
-		allErrs = append(allErrs, field.InternalError(nil, err))
-	} else {
-		allErrs = append(allErrs, validateReleaseArchitecture(c.ControlPlane, c.Compute, types.Architecture(releaseArch))...)
+	if multiArchEnabled {
+		allErrs = append(allErrs, validateMultiReleasePayload(c.ControlPlane, c.Compute)...)
 	}
-
 	if err := validate.ImagePullSecret(c.PullSecret); err != nil {
 		allErrs = append(allErrs, field.Invalid(field.NewPath("pullSecret"), c.PullSecret, err.Error()))
 	}
@@ -454,7 +447,6 @@ func validateNetworking(n *types.Networking, singleNodeOpenShift bool, fldPath *
 	if len(n.ClusterNetwork) == 0 {
 		allErrs = append(allErrs, field.Required(fldPath.Child("clusterNetwork"), "cluster network required"))
 	}
-
 	return allErrs
 }
 
@@ -593,64 +585,6 @@ func validateNetworkingClusterNetworkMTU(c *types.InstallConfig, fldPath *field.
 	}
 	if warnEdgePool {
 		logrus.Warnf("networking.ClusterNetworkMTU exceeds the maximum value generally supported by AWS Local or Wavelength zones. Please ensure all AWS Zones defined in the edge compute pool accepts the MTU %d bytes between nodes (EC2) in the zone and in the Region.", mtu)
-	}
-
-	return allErrs
-}
-func validateOVNKubernetesConfig(n *types.Networking, fldPath *field.Path) field.ErrorList {
-	allErrs := field.ErrorList{}
-
-	if n.OVNKubernetesConfig == nil {
-		return nil
-	}
-
-	if !strings.EqualFold(n.NetworkType, string(operv1.NetworkTypeOVNKubernetes)) {
-		allErrs = append(allErrs, field.Invalid(fldPath.Child("networkType"), n.NetworkType, "ovnKubernetesConfig may only be specified with the OVNKubernetes networkType"))
-	}
-
-	allErrs = append(allErrs, validateOVNIPv4InternalJoinSubnet(n, fldPath.Child("ovnKubernetesConfig", "ipv4", "internalJoinSubnet"))...)
-	return allErrs
-}
-
-func validateOVNIPv4InternalJoinSubnet(n *types.Networking, fldPath *field.Path) field.ErrorList {
-	if ipv4 := n.OVNKubernetesConfig.IPv4; ipv4 == nil || ipv4.InternalJoinSubnet == nil {
-		return nil
-	}
-
-	allErrs := field.ErrorList{}
-	ipv4JoinNet := n.OVNKubernetesConfig.IPv4.InternalJoinSubnet
-
-	if err := validate.SubnetCIDR(&ipv4JoinNet.IPNet); err != nil {
-		allErrs = append(allErrs, field.Invalid(fldPath, ipv4JoinNet.IPNet.String(), err.Error()))
-		return allErrs // CIDR value is invalid, so we cannot perform further validation.
-	}
-
-	for _, net := range n.ClusterNetwork {
-		if validate.DoCIDRsOverlap(&ipv4JoinNet.IPNet, &net.CIDR.IPNet) {
-			errMsg := fmt.Sprintf("must not overlap with clusterNetwork %s", net.CIDR.String())
-			allErrs = append(allErrs, field.Invalid(fldPath, ipv4JoinNet.String(), errMsg))
-		}
-	}
-
-	for _, net := range n.MachineNetwork {
-		if validate.DoCIDRsOverlap(&ipv4JoinNet.IPNet, &net.CIDR.IPNet) {
-			errMsg := fmt.Sprintf("must not overlap with machineNetwork %s", net.CIDR.String())
-			allErrs = append(allErrs, field.Invalid(fldPath, ipv4JoinNet.String(), errMsg))
-		}
-	}
-
-	for _, net := range n.ServiceNetwork {
-		if validate.DoCIDRsOverlap(&ipv4JoinNet.IPNet, &net.IPNet) {
-			errMsg := fmt.Sprintf("must not overlap with serviceNetwork %s", net.String())
-			allErrs = append(allErrs, field.Invalid(fldPath, ipv4JoinNet.String(), errMsg))
-		}
-	}
-
-	if largeEnough, err := isV4NodeSubnetLargeEnough(n.ClusterNetwork, ipv4JoinNet.String()); err == nil && !largeEnough {
-		errMsg := `ipv4InternalJoinSubnet is not large enough for the maximum number of nodes which can be supported by ClusterNetwork`
-		allErrs = append(allErrs, field.Invalid(fldPath, ipv4JoinNet.String(), errMsg))
-	} else if err != nil {
-		allErrs = append(allErrs, field.InternalError(fldPath, err))
 	}
 
 	return allErrs
@@ -1208,10 +1142,6 @@ func validateIPProxy(proxy string, n *types.Networking, fldPath *field.Path) fie
 			break
 		}
 	}
-
-	if ovnCfg := n.OVNKubernetesConfig; ovnCfg != nil && ovnCfg.IPv4 != nil && ovnCfg.IPv4.InternalJoinSubnet != nil && ovnCfg.IPv4.InternalJoinSubnet.Contains(proxyIP) {
-		allErrs = append(allErrs, field.Invalid(fldPath, proxy, "proxy value is part of the ovn-kubernetes IPv4 InternalJoinSubnet"))
-	}
 	return allErrs
 }
 
@@ -1354,8 +1284,6 @@ func validateGatedFeatures(c *types.InstallConfig) field.ErrorList {
 		gatedFeatures = append(gatedFeatures, gcpvalidation.GatedFeatures(c)...)
 	case c.VSphere != nil:
 		gatedFeatures = append(gatedFeatures, vspherevalidation.GatedFeatures(c)...)
-	case c.AWS != nil:
-		gatedFeatures = append(gatedFeatures, awsvalidation.GatedFeatures(c)...)
 	}
 
 	fg := c.EnabledFeatureGates()
@@ -1375,13 +1303,13 @@ func validateGatedFeatures(c *types.InstallConfig) field.ErrorList {
 	return allErrs
 }
 
-// validateReleaseArchitecture ensures a compatible payload is used according to the desired architecture of the cluster.
-func validateReleaseArchitecture(controlPlanePool *types.MachinePool, computePool []types.MachinePool, releaseArch types.Architecture) field.ErrorList {
+// validateMultiReleasePayload ensures a multi payload is used when a multi-arch cluster config is enabled.
+func validateMultiReleasePayload(controlPlanePool *types.MachinePool, computePool []types.MachinePool) field.ErrorList {
 	allErrs := field.ErrorList{}
 
-	clusterArch := version.DefaultArch()
-	if controlPlanePool != nil && controlPlanePool.Architecture != "" {
-		clusterArch = controlPlanePool.Architecture
+	releaseArch, err := version.ReleaseArchitecture()
+	if err != nil {
+		return append(allErrs, field.InternalError(field.NewPath(""), err))
 	}
 
 	switch releaseArch {
@@ -1389,20 +1317,20 @@ func validateReleaseArchitecture(controlPlanePool *types.MachinePool, computePoo
 		// All good
 	case "unknown":
 		for _, p := range computePool {
-			if p.Architecture != "" && clusterArch != p.Architecture {
+			if controlPlanePool != nil && controlPlanePool.Architecture != p.Architecture {
 				// Overriding release architecture is a must during dev/CI so just log a warning instead of erroring out
 				logrus.Warnln("Could not determine release architecture for multi arch cluster configuration. Make sure the release is a multi architecture payload.")
 				break
 			}
 		}
 	default:
-		if clusterArch != releaseArch {
-			errMsg := fmt.Sprintf("cannot create %s controlPlane node from a single architecture %s release payload", clusterArch, releaseArch)
-			allErrs = append(allErrs, field.Invalid(field.NewPath("controlPlane", "architecture"), clusterArch, errMsg))
+		if controlPlanePool != nil && controlPlanePool.Architecture != types.Architecture(releaseArch) {
+			errMsg := fmt.Sprintf("cannot create %s controlPlane node from a single architecture %s release payload", controlPlanePool.Architecture, releaseArch)
+			allErrs = append(allErrs, field.Invalid(field.NewPath("controlPlane", "architecture"), controlPlanePool.Architecture, errMsg))
 		}
 		for i, p := range computePool {
 			poolFldPath := field.NewPath("compute").Index(i)
-			if p.Architecture != "" && p.Architecture != releaseArch {
+			if p.Architecture != types.Architecture(releaseArch) {
 				errMsg := fmt.Sprintf("cannot create %s compute node from a single architecture %s release payload", p.Architecture, releaseArch)
 				allErrs = append(allErrs, field.Invalid(poolFldPath.Child("architecture"), p.Architecture, errMsg))
 			}
@@ -1410,30 +1338,4 @@ func validateReleaseArchitecture(controlPlanePool *types.MachinePool, computePoo
 	}
 
 	return allErrs
-}
-
-// isV4NodeSubnetLargeEnough is validation performed by the cluster network operator:
-// https://github.com/openshift/cluster-network-operator/blob/6b615be1447aa79252ddc73b10675b4638ae13f7/pkg/network/ovn_kubernetes.go#L1761
-// We need to duplicate it here to catch any issues with network customization prior to install.
-func isV4NodeSubnetLargeEnough(cn []types.ClusterNetworkEntry, nodeSubnet string) (bool, error) {
-	var maxNodesNum int
-	addrLen := 32
-	for _, n := range cn {
-		if utilsnet.IsIPv6CIDRString(n.CIDR.String()) {
-			continue
-		}
-		mask, err := strconv.Atoi(strings.Split(n.CIDR.String(), "/")[1])
-		if err != nil {
-			return false, fmt.Errorf("error converting cluster network %s CIDR mask to int: %w", n.CIDR.String(), err)
-		}
-		nodesNum := 1 << (int(n.HostPrefix) - mask)
-		maxNodesNum += nodesNum
-	}
-	// We need to ensure each node can be assigned an IP address from the internal subnet
-	intSubnetMask, err := strconv.Atoi(strings.Split(nodeSubnet, "/")[1])
-	if err != nil {
-		return false, fmt.Errorf("error converting node subnet %s CIDR mask to int: %w", nodeSubnet, err)
-	}
-	// reserve one IP for the gw, one IP for network and one for broadcasting
-	return maxNodesNum < (1<<(addrLen-intSubnetMask) - 3), nil
 }

@@ -36,7 +36,7 @@ var _ asset.WritableAsset = (*ConfigImage)(nil)
 func (ci *ConfigImage) Dependencies() []asset.Asset {
 	return []asset.Asset{
 		&ClusterConfiguration{},
-		&ImageDigestMirrorSet{},
+		&ImageDigestSources{},
 		&ExtraManifests{},
 	}
 }
@@ -76,7 +76,7 @@ func (ci *ConfigImage) Generate(_ context.Context, dependencies asset.Parents) e
 
 	for _, a := range []asset.WritableAsset{
 		&ClusterConfiguration{},
-		&ImageDigestMirrorSet{},
+		&ImageDigestSources{},
 		&ExtraManifests{},
 	} {
 		dependencies.Get(a)

@@ -119,7 +119,7 @@ func (c *Client) GetMachineTypeWithZones(ctx context.Context, project, region, m
 		return nil, nil, err
 	}
 
-	pz, err := GetZones(ctx, svc, project, region)
+	pz, err := GetZones(ctx, svc, project, fmt.Sprintf("region eq .*%s", region))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -139,10 +139,6 @@ func (c *Client) GetMachineTypeWithZones(ctx context.Context, project, region, m
 	if len(machines) == 0 {
 		cctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 		defer cancel()
-
-		if len(pz) == 0 {
-			return nil, nil, fmt.Errorf("failed to find public zone in project %s region %s", project, region)
-		}
 		machine, err := svc.MachineTypes.Get(project, pz[0].Name, machineType).Context(cctx).Do()
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to fetch instance type: %w", err)
@@ -230,19 +226,13 @@ func (c *Client) GetDNSZone(ctx context.Context, project, baseDomain string, isP
 	if !strings.HasSuffix(baseDomain, ".") {
 		baseDomain = fmt.Sprintf("%s.", baseDomain)
 	}
-
-	// currently, only private and public are supported. All peering zones are private.
-	visibility := "private"
-	if isPublic {
-		visibility = "public"
-	}
-
 	req := svc.ManagedZones.List(project).DnsName(baseDomain).Context(ctx)
 	var res *dns.ManagedZone
 	if err := req.Pages(ctx, func(page *dns.ManagedZonesListResponse) error {
 		for idx, v := range page.ManagedZones {
-			// Peering zones are not allowed during the installation process.
-			if v.Visibility == visibility && v.PeeringConfig == nil {
+			if v.Visibility != "private" && isPublic {
+				res = page.ManagedZones[idx]
+			} else if v.Visibility == "private" && !isPublic {
 				res = page.ManagedZones[idx]
 			}
 		}
@@ -371,7 +361,7 @@ func (c *Client) GetRegions(ctx context.Context, project string) ([]string, erro
 		return nil, errors.Wrapf(err, "failed to get regions for project")
 	}
 
-	computeRegions := make([]string, 0, len(gcpRegionsList.Items))
+	computeRegions := make([]string, len(gcpRegionsList.Items))
 	for _, region := range gcpRegionsList.Items {
 		computeRegions = append(computeRegions, region.Name)
 	}
@@ -379,33 +369,34 @@ func (c *Client) GetRegions(ctx context.Context, project string) ([]string, erro
 	return computeRegions, nil
 }
 
-// GetZones uses the GCP Compute Service API to get a list of zones with UP status in a region from a project.
-func GetZones(ctx context.Context, svc *compute.Service, project, region string) ([]*compute.Zone, error) {
+// GetZones uses the GCP Compute Service API to get a list of zones from a project.
+func GetZones(ctx context.Context, svc *compute.Service, project, filter string) ([]*compute.Zone, error) {
 	req := svc.Zones.List(project)
+	if filter != "" {
+		req = req.Filter(filter)
+	}
+
 	zones := []*compute.Zone{}
 	ctx, cancel := context.WithTimeout(ctx, defaultTimeout)
 	defer cancel()
 	if err := req.Pages(ctx, func(page *compute.ZoneList) error {
-		for _, zone := range page.Items {
-			if strings.HasSuffix(zone.Region, region) && strings.EqualFold(zone.Status, "UP") {
-				zones = append(zones, zone)
-			}
-		}
+		zones = append(zones, page.Items...)
 		return nil
 	}); err != nil {
 		return nil, errors.Wrapf(err, "failed to get zones from project %s", project)
 	}
+
 	return zones, nil
 }
 
 // GetZones uses the GCP Compute Service API to get a list of zones from a project.
-func (c *Client) GetZones(ctx context.Context, project, region string) ([]*compute.Zone, error) {
+func (c *Client) GetZones(ctx context.Context, project, filter string) ([]*compute.Zone, error) {
 	svc, err := c.getComputeService(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	return GetZones(ctx, svc, project, region)
+	return GetZones(ctx, svc, project, filter)
 }
 
 func (c *Client) getCloudResourceService(ctx context.Context) (*cloudresourcemanager.Service, error) {
@@ -453,7 +444,7 @@ func (c *Client) getServiceUsageService(ctx context.Context) (*serviceusage.Serv
 
 // GetServiceAccount retrieves a service account from a project if it exists.
 func (c *Client) GetServiceAccount(ctx context.Context, project, serviceAccount string) (string, error) {
-	svc, err := iam.NewService(ctx, option.WithCredentials(c.ssn.Credentials))
+	svc, err := iam.NewService(ctx)
 	if err != nil {
 		return "", errors.Wrapf(err, "failed create IAM service")
 	}

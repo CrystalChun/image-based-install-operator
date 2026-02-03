@@ -62,9 +62,4 @@ type Platform struct {
 	// There must only be one ServiceEndpoint for a service (no duplicates).
 	// +optional
 	ServiceEndpoints []configv1.PowerVSServiceEndpoint `json:"serviceEndpoints,omitempty"`
-
-	// TGName is the name of a pre-created TransitGateway inside IBM Cloud.
-	//
-	// +optional
-	TGName string `json:"tgName,omitempty"`
 }

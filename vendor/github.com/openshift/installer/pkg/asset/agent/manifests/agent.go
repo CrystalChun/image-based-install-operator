@@ -14,8 +14,6 @@ import (
 	"github.com/openshift/assisted-service/models"
 	hivev1 "github.com/openshift/hive/apis/hive/v1"
 	"github.com/openshift/installer/pkg/asset"
-	"github.com/openshift/installer/pkg/asset/agent/workflow"
-	workflowreport "github.com/openshift/installer/pkg/asset/agent/workflow/report"
 )
 
 const (
@@ -59,11 +57,7 @@ func (m *AgentManifests) Dependencies() []asset.Asset {
 }
 
 // Generate generates the respective manifest files.
-func (m *AgentManifests) Generate(ctx context.Context, dependencies asset.Parents) error {
-	if err := workflowreport.GetReport(ctx).Stage(workflow.StageCreateManifests); err != nil {
-		return err
-	}
-
+func (m *AgentManifests) Generate(_ context.Context, dependencies asset.Parents) error {
 	for _, a := range []asset.WritableAsset{
 		&AgentPullSecret{},
 		&InfraEnv{},

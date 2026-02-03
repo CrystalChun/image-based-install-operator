@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -56,7 +57,7 @@ func subnets(ctx context.Context, session *session.Session, region string, ids [
 	var vpcFromSubnet string
 	client := ec2.New(session, aws.NewConfig().WithRegion(region))
 
-	idPointers := make([]*string, 0, len(ids))
+	idPointers := make([]*string, len(ids))
 	for _, id := range ids {
 		idPointers = append(idPointers, aws.String(id))
 	}
@@ -135,7 +136,7 @@ func subnets(ctx context.Context, session *session.Session, region string, ids [
 		availabilityZones[*az.ZoneName] = az
 	}
 
-	publicOnlySubnets := typesaws.IsPublicOnlySubnetsEnabled()
+	publicOnlySubnets := os.Getenv("OPENSHIFT_INSTALL_AWS_PUBLIC_ONLY") != ""
 
 	for _, id := range ids {
 		meta, ok := metas[id]

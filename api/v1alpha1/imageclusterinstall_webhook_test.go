@@ -1,6 +1,8 @@
 package v1alpha1
 
 import (
+	"context"
+
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -37,7 +39,7 @@ var _ = Describe("ValidateUpdate", func() {
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.Spec.SSHKey = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQChSAVWhBU4NBaSI67Gvm0oywPk/dzeh+KlT05VLz3OODld8O0Y95+xg02qMOkNOYz8ucq0BwzTx82DLyl5A/WX64t/Kf2WtnOQ8A02xtVl3LcS9Fzmdi6bA168O/sNKfQ1jeVtZyPBwNkKGgp9qhi/JGVzuwLVV+crMjxsSobsEbHij3FWxLqoNNMPHN8FJFiZZaGbltShheFsepiMf9kY04FZjDKyLrI/rueQWuqhLPfJTOGQktKWEYeLYgKiH82/1x3BNYYuuZxUI0KtQ4S50+M6GSQ1yaR7B7/RI+g/CCwGurccOASqcUtqUDzL53p+Y1ffJfn0WubkxrmNmC/jE0YWDepqDsrLXXdo+k3otWkBx1KhUJ5y/jmJZDkDPVFieqh7yRQ2G1J1ByvBRc4h214PHPztFK63xQ9crsQjlzLCR7esGqJ2iIqoGk1BrXbHlAB9FLPhQXDN+IvpWyO1L02ggGZQnLV7ds0dZApexu2g79HcQrCuKu2W9nPTEZ0= eran@fedora"
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -56,7 +58,7 @@ var _ = Describe("ValidateUpdate", func() {
 		}
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.Spec.Hostname = "other-valid-hostname"
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -76,7 +78,7 @@ var _ = Describe("ValidateUpdate", func() {
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.Spec.SSHKey = "ssh-rsa invalid ssh key"
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err.Error()).To(ContainSubstring("invalid ssh key"))
 	})
@@ -96,7 +98,7 @@ var _ = Describe("ValidateUpdate", func() {
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.Spec.Hostname = "invalid_hostname&"
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err.Error()).To(ContainSubstring("invalid hostname"))
 	})
@@ -122,7 +124,7 @@ var _ = Describe("ValidateUpdate", func() {
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.Spec.Hostname = "other-valid-hostname"
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).ToNot(BeNil())
 		Expect(err.Error()).To(ContainSubstring("cannot update ImageClusterInstall when the configImage is ready"))
@@ -140,7 +142,7 @@ var _ = Describe("ValidateUpdate", func() {
 			},
 		}
 
-		warns, err := newClusterInstall.ValidateCreate()
+		warns, err := newClusterInstall.ValidateCreate(context.Background(), newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -156,7 +158,7 @@ var _ = Describe("ValidateUpdate", func() {
 			},
 		}
 
-		warns, err := newClusterInstall.ValidateCreate()
+		warns, err := newClusterInstall.ValidateCreate(context.Background(), newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err.Error()).To(ContainSubstring("invalid ssh key"))
 	})
@@ -171,7 +173,7 @@ var _ = Describe("ValidateUpdate", func() {
 			},
 		}
 
-		warns, err := newClusterInstall.ValidateCreate()
+		warns, err := newClusterInstall.ValidateCreate(context.Background(), newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err.Error()).To(ContainSubstring("invalid hostname"))
 	})
@@ -187,7 +189,7 @@ var _ = Describe("ValidateUpdate", func() {
 			},
 		}
 
-		warns, err := newClusterInstall.ValidateCreate()
+		warns, err := newClusterInstall.ValidateCreate(context.Background(), newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err.Error()).To(ContainSubstring("invalid machine network"))
 	})
@@ -207,7 +209,7 @@ var _ = Describe("ValidateUpdate", func() {
 			},
 		}
 
-		warns, err := newClusterInstall.ValidateCreate()
+		warns, err := newClusterInstall.ValidateCreate(context.Background(), newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err.Error()).To(ContainSubstring("invalid proxy"))
 	})
@@ -231,7 +233,7 @@ var _ = Describe("ValidateUpdate", func() {
 			Namespace: "test-bmh-namespace",
 		}
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -257,7 +259,7 @@ var _ = Describe("ValidateUpdate", func() {
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.Spec.BareMetalHostRef = nil
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).ToNot(BeNil())
 	})
@@ -282,7 +284,7 @@ var _ = Describe("ValidateUpdate", func() {
 			Namespace: "test-bmh-namespace",
 		}
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -312,7 +314,7 @@ var _ = Describe("ValidateUpdate", func() {
 			Message: InstallSucceededMessage,
 		}}
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -337,7 +339,7 @@ var _ = Describe("ValidateUpdate", func() {
 		newClusterInstall := oldClusterInstall.DeepCopy()
 		newClusterInstall.ObjectMeta.Finalizers = []string{"somefinalizer"}
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})
@@ -370,7 +372,7 @@ var _ = Describe("ValidateUpdate", func() {
 		}}
 		newClusterInstall.Spec.Hostname = "stuff"
 
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).NotTo(BeNil())
 	})
@@ -400,7 +402,7 @@ var _ = Describe("ValidateUpdate", func() {
 				Name: "secret",
 			},
 		}
-		warns, err := newClusterInstall.ValidateUpdate(oldClusterInstall)
+		warns, err := newClusterInstall.ValidateUpdate(context.Background(), oldClusterInstall, newClusterInstall)
 		Expect(warns).To(BeNil())
 		Expect(err).To(BeNil())
 	})

@@ -9,19 +9,9 @@ import (
 
 	"github.com/IBM-Cloud/bluemix-go/crn"
 	"github.com/IBM/vpc-go-sdk/vpcv1"
-	"github.com/sirupsen/logrus"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	configv1 "github.com/openshift/api/config/v1"
 	"github.com/openshift/installer/pkg/types"
-)
-
-const (
-	cosCrnTempl = "crn:v1:bluemix:public:cloud-object-storage:global:::endpoint:s3.direct.%s.cloud-object-storage.appdomain.cloud"
-	dnsCrn      = "crn:v1:bluemix:public:dns-svcs:global::::"
-	iamCrn      = "crn:v1:bluemix:public:iam-svcs:global:::endpoint:private.iam.cloud.ibm.com"
-	rcCrn       = "crn:v1:bluemix:public:resource-controller:global:::endpoint:private.resource-controller.cloud.ibm.com"
-	vpcCrnTempl = "crn:v1:bluemix:public:is:%s:::endpoint:%s.private.iaas.cloud.ibm.com"
 )
 
 //go:generate mockgen -source=./metadata.go -destination=./mock/powervsmetadata_generated.go -package=mock
@@ -45,7 +35,7 @@ type Metadata struct {
 	apiKey         string
 	cisInstanceCRN string
 	dnsInstanceCRN string
-	sessionClient  *Client
+	client         *Client
 
 	mutex sync.Mutex
 }
@@ -55,36 +45,26 @@ func NewMetadata(config *types.InstallConfig) *Metadata {
 	return &Metadata{BaseDomain: config.BaseDomain, PublishStrategy: config.Publish}
 }
 
-func (m *Metadata) client() (*Client, error) {
-	if m.sessionClient != nil {
-		return m.sessionClient, nil
-	}
-
-	client, err := NewClient()
-	if err != nil {
-		return nil, err
-	}
-	m.sessionClient = client
-
-	return m.sessionClient, nil
-}
-
 // AccountID returns the IBM Cloud account ID associated with the authentication
 // credentials.
 func (m *Metadata) AccountID(ctx context.Context) (string, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if m.accountID == "" {
-		client, err := m.client()
+	if m.client == nil {
+		client, err := NewClient()
 		if err != nil {
 			return "", err
 		}
 
-		if client.BXCli.User == nil || client.BXCli.User.Account == "" {
-			return "", fmt.Errorf("failed to get find account ID: %+v", client.BXCli.User)
+		m.client = client
+	}
+
+	if m.accountID == "" {
+		if m.client.BXCli.User == nil || m.client.BXCli.User.Account == "" {
+			return "", fmt.Errorf("failed to get find account ID: %+v", m.client.BXCli.User)
 		}
-		m.accountID = client.BXCli.User.Account
+		m.accountID = m.client.BXCli.User.Account
 	}
 
 	return m.accountID, nil
@@ -96,13 +76,17 @@ func (m *Metadata) APIKey(ctx context.Context) (string, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if m.apiKey == "" {
-		client, err := m.client()
+	if m.client == nil {
+		client, err := NewClient()
 		if err != nil {
 			return "", err
 		}
 
-		m.apiKey = client.GetAPIKey()
+		m.client = client
+	}
+
+	if m.apiKey == "" {
+		m.apiKey = m.client.GetAPIKey()
 	}
 
 	return m.apiKey, nil
@@ -114,13 +98,18 @@ func (m *Metadata) CISInstanceCRN(ctx context.Context) (string, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if m.PublishStrategy == types.ExternalPublishingStrategy && m.cisInstanceCRN == "" {
-		client, err := m.client()
+	var err error
+	if m.client == nil {
+		client, err := NewClient()
 		if err != nil {
 			return "", err
 		}
 
-		m.cisInstanceCRN, err = client.GetInstanceCRNByName(ctx, m.BaseDomain, types.ExternalPublishingStrategy)
+		m.client = client
+	}
+
+	if m.PublishStrategy == types.ExternalPublishingStrategy && m.cisInstanceCRN == "" {
+		m.cisInstanceCRN, err = m.client.GetInstanceCRNByName(ctx, m.BaseDomain, types.ExternalPublishingStrategy)
 		if err != nil {
 			return "", err
 		}
@@ -139,13 +128,18 @@ func (m *Metadata) DNSInstanceCRN(ctx context.Context) (string, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if m.PublishStrategy == types.InternalPublishingStrategy && m.dnsInstanceCRN == "" {
-		client, err := m.client()
+	var err error
+	if m.client == nil {
+		client, err := NewClient()
 		if err != nil {
 			return "", err
 		}
 
-		m.dnsInstanceCRN, err = client.GetInstanceCRNByName(ctx, m.BaseDomain, types.InternalPublishingStrategy)
+		m.client = client
+	}
+
+	if m.PublishStrategy == types.InternalPublishingStrategy && m.dnsInstanceCRN == "" {
+		m.dnsInstanceCRN, err = m.client.GetInstanceCRNByName(ctx, m.BaseDomain, types.InternalPublishingStrategy)
 		if err != nil {
 			return "", err
 		}
@@ -165,15 +159,7 @@ func (m *Metadata) GetExistingVPCGateway(ctx context.Context, vpcName string, vp
 		return "", false, nil
 	}
 
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return "", false, err
-	}
-
-	vpc, err := client.GetVPCByName(ctx, vpcName)
+	vpc, err := m.client.GetVPCByName(ctx, vpcName)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to get VPC: %w", err)
 	}
@@ -183,7 +169,7 @@ func (m *Metadata) GetExistingVPCGateway(ctx context.Context, vpcName string, vp
 		return "", false, fmt.Errorf("failed to parse VPC CRN: %w", err)
 	}
 
-	subnet, err := client.GetSubnetByName(ctx, vpcSubnet, vpcCRN.Region)
+	subnet, err := m.client.GetSubnetByName(ctx, vpcSubnet, vpcCRN.Region)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to get subnet: %w", err)
 	}
@@ -193,7 +179,7 @@ func (m *Metadata) GetExistingVPCGateway(ctx context.Context, vpcName string, vp
 	}
 
 	// Check if a gateway exists in the VPN that isn't attached
-	gw, err := client.GetPublicGatewayByVPC(ctx, vpcName)
+	gw, err := m.client.GetPublicGatewayByVPC(ctx, vpcName)
 	if err != nil {
 		return "", false, fmt.Errorf("failed to get find gw: %w", err)
 	}
@@ -219,16 +205,17 @@ func (m *Metadata) IsVPCPermittedNetwork(ctx context.Context, vpcName string, ba
 		}
 	}
 
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
+	if m.client == nil {
+		client, err := NewClient()
+		if err != nil {
+			return false, err
+		}
 
-	client, err := m.client()
-	if err != nil {
-		return false, err
+		m.client = client
 	}
 
 	// Get CIS zone ID by name
-	zoneID, err := client.GetDNSZoneIDByName(context.TODO(), baseDomain, types.InternalPublishingStrategy)
+	zoneID, err := m.client.GetDNSZoneIDByName(context.TODO(), baseDomain, types.InternalPublishingStrategy)
 	if err != nil {
 		return false, fmt.Errorf("failed to get DNS zone ID: %w", err)
 	}
@@ -238,7 +225,7 @@ func (m *Metadata) IsVPCPermittedNetwork(ctx context.Context, vpcName string, ba
 		return false, fmt.Errorf("failed to parse DNSInstanceCRN: %w", err)
 	}
 
-	networks, err := client.GetDNSInstancePermittedNetworks(ctx, dnsCRN.ServiceInstance, zoneID)
+	networks, err := m.client.GetDNSInstancePermittedNetworks(ctx, dnsCRN.ServiceInstance, zoneID)
 	if err != nil {
 		return false, err
 	}
@@ -246,7 +233,7 @@ func (m *Metadata) IsVPCPermittedNetwork(ctx context.Context, vpcName string, ba
 		return false, nil
 	}
 
-	vpc, err := client.GetVPCByName(ctx, vpcName)
+	vpc, err := m.client.GetVPCByName(ctx, vpcName)
 	if err != nil {
 		return false, err
 	}
@@ -272,24 +259,16 @@ func (m *Metadata) EnsureVPCIsPermittedNetwork(ctx context.Context, vpcName stri
 	}
 
 	if !isVPCPermittedNetwork {
-		m.mutex.Lock()
-		defer m.mutex.Unlock()
-
-		client, err := m.client()
-		if err != nil {
-			return err
-		}
-
-		vpc, err := client.GetVPCByName(ctx, vpcName)
+		vpc, err := m.client.GetVPCByName(ctx, vpcName)
 		if err != nil {
 			return fmt.Errorf("failed to find VPC by name: %w", err)
 		}
 
-		zoneID, err := client.GetDNSZoneIDByName(ctx, m.BaseDomain, types.InternalPublishingStrategy)
+		zoneID, err := m.client.GetDNSZoneIDByName(ctx, m.BaseDomain, types.InternalPublishingStrategy)
 		if err != nil {
 			return fmt.Errorf("failed to get DNS zone ID: %w", err)
 		}
-		err = client.AddVPCToPermittedNetworks(ctx, *vpc.CRN, dnsCRN.ServiceInstance, zoneID)
+		err = m.client.AddVPCToPermittedNetworks(ctx, *vpc.CRN, dnsCRN.ServiceInstance, zoneID)
 		if err != nil {
 			return fmt.Errorf("failed to add permitted network: %w", err)
 		}
@@ -299,14 +278,7 @@ func (m *Metadata) EnsureVPCIsPermittedNetwork(ctx context.Context, vpcName stri
 
 // GetSubnetID gets the ID of a VPC subnet by name and region.
 func (m *Metadata) GetSubnetID(ctx context.Context, subnetName string, vpcRegion string) (string, error) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return "", err
-	}
-	subnet, err := client.GetSubnetByName(ctx, subnetName, vpcRegion)
+	subnet, err := m.client.GetSubnetByName(ctx, subnetName, vpcRegion)
 	if err != nil {
 		return "", err
 	}
@@ -315,19 +287,11 @@ func (m *Metadata) GetSubnetID(ctx context.Context, subnetName string, vpcRegion
 
 // GetVPCSubnets gets a list of subnets in a VPC.
 func (m *Metadata) GetVPCSubnets(ctx context.Context, vpcName string) ([]vpcv1.Subnet, error) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
+	vpc, err := m.client.GetVPCByName(ctx, vpcName)
 	if err != nil {
 		return nil, err
 	}
-
-	vpc, err := client.GetVPCByName(ctx, vpcName)
-	if err != nil {
-		return nil, err
-	}
-	subnets, err := client.GetVPCSubnets(ctx, *vpc.ID)
+	subnets, err := m.client.GetVPCSubnets(ctx, *vpc.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get VPC subnets: %w", err)
 	}
@@ -336,34 +300,20 @@ func (m *Metadata) GetVPCSubnets(ctx context.Context, vpcName string) ([]vpcv1.S
 
 // GetDNSServerIP gets the IP of a custom resolver for DNS use.
 func (m *Metadata) GetDNSServerIP(ctx context.Context, vpcName string) (string, error) {
-	if m.dnsInstanceCRN == "" {
-		_, err := m.DNSInstanceCRN(ctx)
-		if err != nil {
-			return "", fmt.Errorf("unable to locate DNS instance: %w", err)
-		}
+	vpc, err := m.client.GetVPCByName(ctx, vpcName)
+	if err != nil {
+		return "", err
 	}
+
 	dnsCRN, err := crn.Parse(m.dnsInstanceCRN)
 	if err != nil {
 		return "", fmt.Errorf("failed to parse DNSInstanceCRN: %w", err)
 	}
-
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return "", err
-	}
-	vpc, err := client.GetVPCByName(ctx, vpcName)
-	if err != nil {
-		return "", err
-	}
-
-	dnsServerIP, err := client.GetDNSCustomResolverIP(ctx, dnsCRN.ServiceInstance, *vpc.ID)
+	dnsServerIP, err := m.client.GetDNSCustomResolverIP(ctx, dnsCRN.ServiceInstance, *vpc.ID)
 	if err != nil {
 		// There is no custom resolver, try to create one.
 		customResolverName := fmt.Sprintf("%s-custom-resolver", vpcName)
-		customResolver, err := client.CreateDNSCustomResolver(ctx, customResolverName, dnsCRN.ServiceInstance, *vpc.ID)
+		customResolver, err := m.client.CreateDNSCustomResolver(ctx, customResolverName, dnsCRN.ServiceInstance, *vpc.ID)
 		if err != nil {
 			return "", err
 		}
@@ -377,7 +327,7 @@ func (m *Metadata) GetDNSServerIP(ctx context.Context, vpcName string) (string, 
 		customResolverID := *customResolver.ID
 		var lastErr error
 		err = wait.ExponentialBackoffWithContext(ctx, backoff, func(context.Context) (bool, error) {
-			customResolver, lastErr = client.EnableDNSCustomResolver(ctx, dnsCRN.ServiceInstance, customResolverID)
+			customResolver, lastErr = m.client.EnableDNSCustomResolver(ctx, dnsCRN.ServiceInstance, customResolverID)
 			if lastErr == nil {
 				return true, nil
 			}
@@ -396,15 +346,7 @@ func (m *Metadata) GetDNSServerIP(ctx context.Context, vpcName string) (string, 
 
 // CreateDNSRecord creates a CNAME record for the specified hostname and destination hostname.
 func (m *Metadata) CreateDNSRecord(ctx context.Context, hostname string, destHostname string) error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return err
-	}
-
-	instanceCRN, err := client.GetInstanceCRNByName(ctx, m.BaseDomain, m.PublishStrategy)
+	instanceCRN, err := m.client.GetInstanceCRNByName(ctx, m.BaseDomain, m.PublishStrategy)
 	if err != nil {
 		return fmt.Errorf("failed to get InstanceCRN (%s) by name: %w", m.PublishStrategy, err)
 	}
@@ -417,7 +359,7 @@ func (m *Metadata) CreateDNSRecord(ctx context.Context, hostname string, destHos
 
 	var lastErr error
 	err = wait.ExponentialBackoffWithContext(ctx, backoff, func(context.Context) (bool, error) {
-		lastErr = client.CreateDNSRecord(ctx, m.PublishStrategy, instanceCRN, m.BaseDomain, hostname, destHostname)
+		lastErr = m.client.CreateDNSRecord(ctx, m.PublishStrategy, instanceCRN, m.BaseDomain, hostname, destHostname)
 		if lastErr == nil {
 			return true, nil
 		}
@@ -438,50 +380,29 @@ func (m *Metadata) CreateDNSRecord(ctx context.Context, hostname string, destHos
 
 // ListSecurityGroupRules lists the rules created in the specified VPC.
 func (m *Metadata) ListSecurityGroupRules(ctx context.Context, vpcID string) (*vpcv1.SecurityGroupRuleCollection, error) {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return nil, err
-	}
-
-	return client.ListSecurityGroupRules(ctx, vpcID)
+	return m.client.ListSecurityGroupRules(ctx, vpcID)
 }
 
 // SetVPCServiceURLForRegion sets the URL for the VPC based on the specified region.
 func (m *Metadata) SetVPCServiceURLForRegion(ctx context.Context, vpcRegion string) error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return err
-	}
-
-	return client.SetVPCServiceURLForRegion(ctx, vpcRegion)
+	return m.client.SetVPCServiceURLForRegion(ctx, vpcRegion)
 }
 
 // AddSecurityGroupRule adds a security group rule to the specified VPC.
 func (m *Metadata) AddSecurityGroupRule(ctx context.Context, rule *vpcv1.SecurityGroupRulePrototype, vpcID string) error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
 	backoff := wait.Backoff{
 		Duration: 15 * time.Second,
 		Factor:   1.1,
 		Cap:      leftInContext(ctx),
 		Steps:    math.MaxInt32}
 
-	client, err := m.client()
-	if err != nil {
-		return err
-	}
-
 	var lastErr error
-	err = wait.ExponentialBackoffWithContext(ctx, backoff, func(context.Context) (bool, error) {
-		lastErr = client.AddSecurityGroupRule(ctx, vpcID, rule)
-		return lastErr == nil, nil
+	err := wait.ExponentialBackoffWithContext(ctx, backoff, func(context.Context) (bool, error) {
+		lastErr = m.client.AddSecurityGroupRule(ctx, vpcID, rule)
+		if lastErr == nil {
+			return true, nil
+		}
+		return false, nil
 	})
 
 	if err != nil {
@@ -500,119 +421,4 @@ func leftInContext(ctx context.Context) time.Duration {
 	}
 
 	return time.Until(deadline)
-}
-
-// SetDefaultPrivateServiceEndpoints sets service endpoint overrides as needed for Disconnected install.
-func (m *Metadata) SetDefaultPrivateServiceEndpoints(ctx context.Context, overrides []configv1.PowerVSServiceEndpoint, cosRegion string, vpcRegion string) []configv1.PowerVSServiceEndpoint {
-	overrides = addOverride(overrides, string(configv1.IBMCloudServiceCOS), fmt.Sprintf("https://s3.direct.%s.cloud-object-storage.appdomain.cloud", cosRegion))
-	overrides = addOverride(overrides, string(configv1.IBMCloudServiceDNSServices), "https://api.private.dns-svcs.cloud.ibm.com/v1")
-	overrides = addOverride(overrides, string(configv1.IBMCloudServiceIAM), "https://private.iam.cloud.ibm.com")
-	overrides = addOverride(overrides, "Power", fmt.Sprintf("https://private.%s.power-iaas.cloud.ibm.com", vpcRegion)) // FIXME confiv1.IBMCloudServicePower?
-	overrides = addOverride(overrides, string(configv1.IBMCloudServiceResourceController), "https://private.resource-controller.cloud.ibm.com")
-	overrides = addOverride(overrides, string(configv1.IBMCloudServiceResourceManager), "https://private.resource-controller.cloud.ibm.com")
-	overrides = addOverride(overrides, string(configv1.IBMCloudServiceVPC), fmt.Sprintf("https://%s.private.iaas.cloud.ibm.com", vpcRegion))
-	return overrides
-}
-
-func addOverride(overrides []configv1.PowerVSServiceEndpoint, name string, url string) []configv1.PowerVSServiceEndpoint {
-	found := false
-	for _, service := range overrides {
-		if service.Name == name {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return append(overrides, configv1.PowerVSServiceEndpoint{Name: name, URL: url})
-	}
-	return overrides
-}
-
-// CreateVirtualPrivateEndpointGateways checks and creates necessary VPEs in given target VPC for Disconnected install.
-func (m *Metadata) CreateVirtualPrivateEndpointGateways(ctx context.Context, infraID string, region string, vpcID string, subnetID string, groupID string, endpointOverrides []configv1.PowerVSServiceEndpoint) error {
-	m.mutex.Lock()
-	defer m.mutex.Unlock()
-
-	client, err := m.client()
-	if err != nil {
-		return err
-	}
-
-	endpoint, err := m.fetchEndpointOverride(endpointOverrides, "IAM")
-	if err != nil {
-		return fmt.Errorf("failed to fetch endpoint override found for IAM: %w", err)
-	}
-	if endpoint == "" {
-		name := fmt.Sprintf("%s-vpe-iam", infraID)
-		logrus.Debugf("InfraReady: Ensuring VPE gateway for IAM %v", iamCrn)
-		_, err = client.CreateVirtualPrivateEndpointGateway(ctx, name, vpcID, subnetID, groupID, iamCrn)
-		if err != nil {
-			return fmt.Errorf("failed to create VPE: %w", err)
-		}
-	}
-
-	endpoint, err = m.fetchEndpointOverride(endpointOverrides, "COS")
-	if err != nil {
-		return fmt.Errorf("failed to fetch endpoint override found for COS: %w", err)
-	}
-	if endpoint == "" {
-		name := fmt.Sprintf("%s-vpe-cos", infraID)
-		cosCrn := fmt.Sprintf(cosCrnTempl, region)
-		logrus.Debugf("InfraReady: Ensuring VPE gateway for COS %v", cosCrn)
-		_, err = client.CreateVirtualPrivateEndpointGateway(ctx, name, vpcID, subnetID, groupID, cosCrn)
-		if err != nil {
-			return fmt.Errorf("failed to create VPE: %w", err)
-		}
-	}
-
-	endpoint, err = m.fetchEndpointOverride(endpointOverrides, "DNSServices")
-	if err != nil {
-		return fmt.Errorf("failed to fetch endpoint override found for DNS: %w", err)
-	}
-	if endpoint == "" {
-		name := fmt.Sprintf("%s-vpe-dns", infraID)
-		logrus.Debugf("InfraReady: Ensuring VPE gateway for DNS services %v", dnsCrn)
-		_, err = client.CreateVirtualPrivateEndpointGateway(ctx, name, vpcID, subnetID, groupID, dnsCrn)
-		if err != nil {
-			return fmt.Errorf("failed to create VPE: %w", err)
-		}
-	}
-
-	endpoint, err = m.fetchEndpointOverride(endpointOverrides, string(configv1.IBMCloudServiceResourceController))
-	if err != nil {
-		return fmt.Errorf("failed to fetch endpoint override found for RC: %w", err)
-	}
-	if endpoint == "" {
-		name := fmt.Sprintf("%s-vpe-rc", infraID)
-		logrus.Debugf("InfraReady: Ensuring VPE gateway for RC %v", rcCrn)
-		_, err = client.CreateVirtualPrivateEndpointGateway(ctx, name, vpcID, subnetID, groupID, rcCrn)
-		if err != nil {
-			return fmt.Errorf("failed to create VPE: %w", err)
-		}
-	}
-
-	endpoint, err = m.fetchEndpointOverride(endpointOverrides, string(configv1.IBMCloudServiceVPC))
-	if err != nil {
-		return fmt.Errorf("failed to fetch endpoint override found for VPC: %w", err)
-	}
-	if endpoint == "" {
-		name := fmt.Sprintf("%s-vpe-vpc", infraID)
-		vpcCrn := fmt.Sprintf(vpcCrnTempl, region, region)
-		logrus.Debugf("InfraReady: Ensuring VPE gateway for VPC %v", vpcCrn)
-		_, err = client.CreateVirtualPrivateEndpointGateway(ctx, name, vpcID, subnetID, groupID, vpcCrn)
-		if err != nil {
-			return fmt.Errorf("failed to create VPE: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (m *Metadata) fetchEndpointOverride(overrides []configv1.PowerVSServiceEndpoint, svcID string) (string, error) {
-	for _, endpoint := range overrides {
-		if endpoint.Name == svcID {
-			return endpoint.URL, nil
-		}
-	}
-	return "", nil
 }
